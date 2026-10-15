@@ -12,6 +12,8 @@ Filenames are <patientID>_<sliceNumber>.jpeg, with 20 slices per patient
 
 import os
 from sklearn.model_selection import train_test_split
+from PIL import Image
+from torch.utils.data import Dataset
 
 CLASSES = {"NC": 0, "AD": 1}
 IMG_EXTS = (".jpeg", ".jpg", ".png")
@@ -53,3 +55,21 @@ def split_by_patient(samples, val_fraction=0.15, seed=42):
     train = [s for s in samples if s[2] not in val_pids]
     val = [s for s in samples if s[2] in val_pids]
     return train, val
+
+
+class ADNIDataset(Dataset):
+    """Returns (image_tensor, label) for each MRI slice."""
+
+    def __init__(self, samples, transform=None):
+        self.samples = samples
+        self.transform = transform
+
+    def __len__(self):
+        return len(self.samples)
+
+    def __getitem__(self, idx):
+        path, label, _ = self.samples[idx]
+        image = Image.open(path).convert("L")  # force grey scale
+        if self.transform is not None:
+            image = self.transform(image)
+        return image, label
