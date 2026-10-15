@@ -14,7 +14,6 @@ import os
 from sklearn.model_selection import train_test_split
 from PIL import Image
 from torch.utils.data import Dataset, DataLoader
-
 from torchvision import transforms
 
 CLASSES = {"NC": 0, "AD": 1}
@@ -110,6 +109,14 @@ def get_dataloaders(
         gather_samples(data_root, "train"), val_fraction, seed
     )
     test_samples = gather_samples(data_root, "test")
+
+    # check for overlapping patients in the test/train/validate splits
+    train_pids = {pid for _, _, pid in train_samples}
+    val_pids = {pid for _, _, pid in val_samples}
+    test_pids = {pid for _, _, pid in test_samples}
+    assert not (
+        train_pids & val_pids or train_pids & test_pids or val_pids & test_pids
+    ), "Patient leakage between splits"
 
     train_ds = ADNIDataset(train_samples, get_transforms(train=True))
     val_ds = ADNIDataset(val_samples, get_transforms(train=False))
