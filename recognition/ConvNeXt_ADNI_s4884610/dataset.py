@@ -14,6 +14,7 @@ import os
 from sklearn.model_selection import train_test_split
 from PIL import Image
 from torch.utils.data import Dataset
+from torchvision import transforms
 
 CLASSES = {"NC": 0, "AD": 1}
 IMG_EXTS = (".jpeg", ".jpg", ".png")
@@ -73,3 +74,28 @@ class ADNIDataset(Dataset):
         if self.transform is not None:
             image = self.transform(image)
         return image, label
+
+
+class PerImageStandardise:
+    """Scale each image to zero mean and variance to 1 to ensure same scale of intensity
+    from scan to scan.
+    """
+
+    def __call__(self, x):
+        return (x - x.mean()) / (x.std() + 1e-8)
+
+
+def get_transforms(train):
+    """Transforms the training images with flips, rotations, scaling, etc, while
+    both the training and test gets turned into tensors and standardised
+    """
+    steps = []
+    if train:
+        steps += [
+            transforms.RandomHorizontalFlip(),
+            transforms.RandomAffine(
+                degrees=10, translate=(0.05, 0.05), scale=(0.95, 1.05)
+            ),
+        ]
+    steps += [transforms.ToTensor(), PerImageStandardise()]
+    return transforms.Compose(steps)
