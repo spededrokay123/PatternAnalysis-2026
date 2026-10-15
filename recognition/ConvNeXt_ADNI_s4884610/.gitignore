@@ -1,0 +1,12 @@
+# Python cache
+__pycache__/
+
+# Model weights / checkpoints
+*.pt
+*.pth
+
+# Datasets (never commit data)
+data/
+
+# macOS
+.DS_Store
