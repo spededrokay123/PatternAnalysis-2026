@@ -11,6 +11,7 @@ Filenames are <patientID>_<sliceNumber>.jpeg, with 20 slices per patient
 """
 
 import os
+from sklearn.model_selection import train_test_split
 
 CLASSES = {"NC": 0, "AD": 1}
 IMG_EXTS = (".jpeg", ".jpg", ".png")
@@ -32,3 +33,23 @@ def gather_samples(data_root, split):
                     (os.path.join(class_dir, fname), label, get_patient_id(fname))
                 )
     return samples
+
+
+def split_by_patient(samples, val_fraction=0.15, seed=42):
+    """
+    Split samples into train/val by patient to esnure that each
+    patient is only in one split. Uses stratified sampling on the label so the AD/NC ratio
+    is preserved in both splits.
+    """
+    patient_label = {pid: lbl for _, lbl, pid in samples}  # one label per patient
+    patients = sorted(patient_label)
+    labels = [patient_label[p] for p in patients]
+
+    train_pids, val_pids = train_test_split(
+        patients, test_size=val_fraction, stratify=labels, random_state=seed
+    )
+
+    val_pids = set(val_pids)
+    train = [s for s in samples if s[2] not in val_pids]
+    val = [s for s in samples if s[2] in val_pids]
+    return train, val
