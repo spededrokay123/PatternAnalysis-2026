@@ -13,7 +13,8 @@ Filenames are <patientID>_<sliceNumber>.jpeg, with 20 slices per patient
 import os
 from sklearn.model_selection import train_test_split
 from PIL import Image
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, DataLoader
+
 from torchvision import transforms
 
 CLASSES = {"NC": 0, "AD": 1}
@@ -99,3 +100,40 @@ def get_transforms(train):
         ]
     steps += [transforms.ToTensor(), PerImageStandardise()]
     return transforms.Compose(steps)
+
+
+def get_dataloaders(
+    data_root, batch_size=32, val_fraction=0.15, num_workers=4, seed=42
+):
+    """Build train/val/test DataLoaders based on patient split."""
+    train_samples, val_samples = split_by_patient(
+        gather_samples(data_root, "train"), val_fraction, seed
+    )
+    test_samples = gather_samples(data_root, "test")
+
+    train_ds = ADNIDataset(train_samples, get_transforms(train=True))
+    val_ds = ADNIDataset(val_samples, get_transforms(train=False))
+    test_ds = ADNIDataset(test_samples, get_transforms(train=False))
+
+    train_loader = DataLoader(
+        train_ds,
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=num_workers,
+        pin_memory=True,
+    )
+    val_loader = DataLoader(
+        val_ds,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=num_workers,
+        pin_memory=True,
+    )
+    test_loader = DataLoader(
+        test_ds,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=num_workers,
+        pin_memory=True,
+    )
+    return train_loader, val_loader, test_loader
