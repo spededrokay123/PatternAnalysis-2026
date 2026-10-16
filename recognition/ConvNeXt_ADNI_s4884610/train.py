@@ -6,10 +6,13 @@ Usage:
 """
 
 import argparse
+import time
 import os
 import torch
+import torch.nn as nn
 from dataset import get_dataloaders
 from modules import BaselineCNN
+import matplotlib.pyplot as plt
 
 
 def get_device():
@@ -92,6 +95,33 @@ def evaluate(model, loader, criterion, device):
     )
 
 
+def plot_history(history, out_path, title):
+    """Save loss and accuracy curves."""
+    epochs = range(1, len(history["train_loss"]) + 1)
+    fig, (ax_loss, ax_acc) = plt.subplots(1, 2, figsize=(12, 4))
+
+    ax_loss.plot(epochs, history["train_loss"], marker="o", label="Train")
+    ax_loss.plot(epochs, history["val_loss"], marker="o", label="Validation")
+    ax_loss.set_xlabel("Epoch")
+    ax_loss.set_ylabel("Loss")
+    ax_loss.set_title("Loss")
+    ax_loss.legend()
+    ax_loss.grid()
+
+    ax_acc.plot(epochs, history["train_acc"], marker="o", label="Train")
+    ax_acc.plot(epochs, history["val_acc"], marker="o", label="Validation")
+    ax_acc.set_xlabel("Epoch")
+    ax_acc.set_ylabel("Accuracy")
+    ax_acc.set_title("Accuracy")
+    ax_acc.legend()
+    ax_acc.grid()
+
+    fig.suptitle(title)
+    fig.tight_layout()
+    fig.savefig(out_path)
+    plt.close(fig)
+
+
 if __name__ == "__main__":
     args = parse_args()
     device = get_device()
@@ -104,3 +134,48 @@ if __name__ == "__main__":
     model = build_model(args.model).to(device)
     n_params = sum(p.numel() for p in model.parameters())
     print(f"Model: {args.model} ({n_params:,} parameters)")
+
+    criterion = nn.CrossEntropyLoss()
+    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr)
+
+    os.makedirs(args.out_dir, exist_ok=True)
+    ckpt_path = os.path.join(args.out_dir, f"{args.model}_best.pt")
+    history = {"train_loss": [], "train_acc": [], "val_loss": [], "val_acc": []}
+    best_val_acc = 0.0
+
+    for epoch in range(1, args.epochs + 1):
+        start = time.time()
+        train_loss, train_acc = train_one_epoch(
+            model, train_loader, criterion, optimizer, device
+        )
+        val_loss, val_acc, _, _ = evaluate(model, val_loader, criterion, device)
+
+        history["train_loss"].append(train_loss)
+        history["train_acc"].append(train_acc)
+        history["val_loss"].append(val_loss)
+        history["val_acc"].append(val_acc)
+
+        if val_acc > best_val_acc:
+            best_val_acc = val_acc
+            torch.save(model.state_dict(), ckpt_path)
+
+        print(
+            f"Epoch {epoch}/{args.epochs} | "
+            f"train loss {train_loss:.4f} acc {train_acc:.3f} | "
+            f"val loss {val_loss:.4f} acc {val_acc:.3f} | "
+            f"{time.time() - start:.0f}s"
+        )
+
+    # Plot the loss and accuracy itself.
+    plot_history(
+        history,
+        os.path.join(args.out_dir, f"{args.model}_curves.png"),
+        f"{args.model} training curves",
+    )
+
+    # Final Validation of baseline on Rangpur, only gets run once.
+    """
+    model.load_state_dict(torch.load(ckpt_path, map_location=device))
+    test_loss, test_acc, _, _ = evaluate(model, test_loader, criterion, device)
+    print(f"Best val accuracy {best_val_acc:.3f} | Test loss {test_loss:.4f} | Test accuracy {test_acc:.3f}")
+    """
