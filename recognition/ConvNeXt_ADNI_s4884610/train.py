@@ -11,7 +11,7 @@ import os
 import torch
 import torch.nn as nn
 from dataset import get_dataloaders
-from modules import BaselineCNN
+from modules import BaselineCNN, ConvNeXt
 import matplotlib.pyplot as plt
 
 
@@ -28,12 +28,14 @@ def build_model(name):
     """Return an initialised model from its name."""
     if name == "baseline":
         return BaselineCNN()
+    if name == "convnext":
+        return ConvNeXt()
     raise ValueError(f"Unknown model: {name}")
 
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Train a model on ADNI AD vs NC")
-    parser.add_argument("--model", default="baseline", choices=["baseline"])
+    parser.add_argument("--model", default="baseline", choices=["baseline", "convnext"])
     parser.add_argument(
         "--data_root", default=os.path.expanduser("~/comp3710_data/AD_NC")
     )
