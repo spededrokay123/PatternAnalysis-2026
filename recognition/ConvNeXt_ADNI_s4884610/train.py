@@ -7,9 +7,7 @@ Usage:
 
 import argparse
 import os
-
 import torch
-
 from dataset import get_dataloaders
 from modules import BaselineCNN
 
@@ -42,6 +40,56 @@ def parse_args():
     parser.add_argument("--num_workers", type=int, default=4)
     parser.add_argument("--out_dir", default="outputs")
     return parser.parse_args()
+
+
+def train_one_epoch(model, loader, criterion, optimizer, device):
+    """One pass over the training set. Returns (mean loss, accuracy)."""
+    model.train()
+    total_loss, correct, total = 0.0, 0, 0
+
+    for images, labels in loader:
+        images, labels = images.to(device), labels.to(device)
+
+        optimizer.zero_grad()
+        logits = model(images)
+        loss = criterion(logits, labels)
+        loss.backward()
+        optimizer.step()
+
+        total_loss += loss.item() * labels.size(0)
+        correct += (logits.argmax(dim=1) == labels).sum().item()
+        total += labels.size(0)
+
+    return total_loss / total, correct / total
+
+
+@torch.no_grad()
+def evaluate(model, loader, criterion, device):
+    """
+    Evaluate model on a validation or test loader.
+    Returns (mean loss, accuracy, AD probabilities, true labels).
+    """
+    model.eval()
+    total_loss, correct, total = 0.0, 0, 0
+    all_probs, all_labels = [], []
+
+    for images, labels in loader:
+        images, labels = images.to(device), labels.to(device)
+        logits = model(images)
+
+        total_loss += criterion(logits, labels).item() * labels.size(0)
+        correct += (logits.argmax(dim=1) == labels).sum().item()
+        total += labels.size(0)
+
+        all_probs.append(torch.softmax(logits, dim=1)[:, 1].cpu())
+        all_labels.append(labels.cpu())
+
+    return (
+        total_loss / total,
+        correct / total,
+        torch.cat(all_probs),
+        torch.cat(all_labels),
+    )
 
 
 if __name__ == "__main__":
