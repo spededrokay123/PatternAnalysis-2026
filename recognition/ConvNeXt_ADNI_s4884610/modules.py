@@ -46,3 +46,48 @@ class BaselineCNN(nn.Module):
         x = self.fc2(x)
 
         return x
+
+
+class LayerNorm2d(nn.Module):
+    """LayerNorm for [B, C, H, W] tensors because  pytorch and numpy hate me"""
+
+    def __init__(self, channels, eps=1e-6):
+        super().__init__()
+        self.norm = nn.LayerNorm(channels, eps=eps)
+
+    def forward(self, x):
+        x = x.permute(0, 2, 3, 1)
+        x = self.norm(x)
+        x = x.permute(0, 3, 1, 2)
+        return x
+
+
+class ConvNeXtBlock(nn.Module):
+    """
+    ConvNeXt block (Liu et al. 2022)
+    """
+
+    def __init__(self, dim, layer_scale_init=1e-6):
+        super().__init__()
+
+        self.dwconv = nn.Conv2d(dim, dim, kernel_size=7, padding=3, groups=dim)
+        self.norm = nn.LayerNorm(dim, eps=1e-6)
+        self.fc1 = nn.Linear(dim, 4 * dim)
+        self.fc2 = nn.Linear(4 * dim, dim)
+        self.gamma = nn.Parameter(layer_scale_init * torch.ones(dim))
+
+    def forward(self, x):
+        residual = x
+
+        x = self.dwconv(x)
+        x = x.permute(0, 2, 3, 1)
+
+        x = self.norm(x)
+        x = self.fc1(x)
+        x = F.gelu(x)
+        x = self.fc2(x)
+        x = self.gamma * x
+
+        x = x.permute(0, 3, 1, 2)
+
+        return residual + x
