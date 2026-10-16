@@ -91,3 +91,69 @@ class ConvNeXtBlock(nn.Module):
         x = x.permute(0, 3, 1, 2)
 
         return residual + x
+
+
+def make_stage(in_dim, out_dim, depth, downsample=True):
+    """downsampling layer followed by depth ConvNeXt blocks."""
+    layers = []
+
+    if downsample:
+        layers.append(LayerNorm2d(in_dim))
+        layers.append(nn.Conv2d(in_dim, out_dim, kernel_size=2, stride=2))
+
+    for _ in range(depth):
+        layers.append(ConvNeXtBlock(out_dim))
+
+    return nn.Sequential(*layers)
+
+
+class ConvNeXt(nn.Module):
+    """
+    ConvNeXt for greyscale MRI slices
+
+    Input:  [B, 1, 240, 256]
+    Output: [B, 2] logits for NC / AD
+    """
+
+    def __init__(
+        self, in_channels=1, n_classes=2, depths=(2, 2, 6, 2), dims=(48, 96, 192, 384)
+    ):
+        super().__init__()
+
+        self.stem = nn.Sequential(
+            nn.Conv2d(in_channels, dims[0], kernel_size=4, stride=4),
+            LayerNorm2d(dims[0]),
+        )
+
+        self.stage1 = make_stage(dims[0], dims[0], depths[0], downsample=False)
+        self.stage2 = make_stage(dims[0], dims[1], depths[1])
+        self.stage3 = make_stage(dims[1], dims[2], depths[2])
+        self.stage4 = make_stage(dims[2], dims[3], depths[3])
+
+        self.gap = nn.AdaptiveAvgPool2d(1)
+        self.norm = nn.LayerNorm(dims[3], eps=1e-6)
+        self.head = nn.Linear(dims[3], n_classes)
+
+        self.apply(self._init_weights)
+
+    def _init_weights(self, m):
+        if isinstance(m, (nn.Conv2d, nn.Linear)):
+            nn.init.trunc_normal_(m.weight, std=0.02)
+            if m.bias is not None:
+                nn.init.zeros_(m.bias)
+
+    def forward(self, x):
+        x = self.stem(x)
+
+        x = self.stage1(x)
+        x = self.stage2(x)
+        x = self.stage3(x)
+        x = self.stage4(x)
+
+        x = self.gap(x)
+        x = torch.flatten(x, 1)
+
+        x = self.norm(x)
+        x = self.head(x)
+
+        return x
