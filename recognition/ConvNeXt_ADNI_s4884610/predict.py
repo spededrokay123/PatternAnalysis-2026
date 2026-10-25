@@ -199,3 +199,79 @@ def plot_reliability(conf_before, conf_after, correct, path, title):
     fig.tight_layout()
     fig.savefig(path)
     plt.close(fig)
+
+
+def reject_option(confidences, correct, threshold):
+    """Report predications >= to the threshold, otherwise advice referral"""
+    accepted = confidences >= threshold
+    return {
+        "threshold": threshold,
+        "referral_rate": 1 - accepted.mean(),
+        "accepted_accuracy": correct[accepted].mean() if accepted.any() else 0.0,
+    }
+
+
+def plot_referral_tradeoff(confidences, correct, chosen, path, title):
+    """Accepted vs referred scans at different thresholds"""
+    thresholds = np.arange(0.5, 1.0, 0.01)
+    referred, accuracy = [], []
+    for t in thresholds:
+        result = reject_option(confidences, correct, t)
+        if result["referral_rate"] < 1:  # skip thresholds that accept nothing
+            referred.append(result["referral_rate"])
+            accuracy.append(result["accepted_accuracy"])
+
+    chosen_result = reject_option(confidences, correct, chosen)
+
+    fig, ax = plt.subplots(figsize=(6, 4))
+    ax.plot(referred, accuracy, marker=".")
+    ax.scatter(
+        chosen_result["referral_rate"],
+        chosen_result["accepted_accuracy"],
+        color="red",
+        zorder=3,
+        label=f"Threshold {chosen:.2f}",
+    )
+    ax.axvline(0.3, color="grey", linestyle="--", label="30% referral limit")
+    ax.set_xlabel("Fraction of slices referred to a clinician")
+    ax.set_ylabel("Accuracy of accepted slices")
+    ax.set_title(title)
+    ax.legend()
+    ax.grid()
+    fig.tight_layout()
+    fig.savefig(path)
+    plt.close(fig)
+
+
+def plot_failures(samples, probs, labels, path, title, n=5):
+    """Show the most confident slies that are wrong (at most n), 1 per scan"""
+    preds = (probs >= 0.5).astype(int)
+    confidences = np.maximum(probs, 1 - probs)
+    wrong = np.where(preds != labels)[0]
+
+    worst, seen_scans = [], set()
+    for idx in wrong[np.argsort(-confidences[wrong])]:
+        scan = os.path.basename(samples[idx][0]).split("_")[0]
+        if scan not in seen_scans:
+            seen_scans.add(scan)
+            worst.append(idx)
+        if len(worst) == n:
+            break
+
+    fig, axes = plt.subplots(1, n, figsize=(3 * n, 3.5))
+    for ax, idx in zip(np.atleast_1d(axes), worst):
+        path_i = samples[idx][0]
+        ax.imshow(Image.open(path_i).convert("L"), cmap="gray")
+        ax.set_title(
+            f"{os.path.basename(path_i)}\n"
+            f"true {CLASS_NAMES[labels[idx]]}, pred {CLASS_NAMES[preds[idx]]}\n"
+            f"confidence {confidences[idx]:.2f}",
+            fontsize=9,
+        )
+        ax.axis("off")
+
+    fig.suptitle(title, y=1.05)
+    fig.tight_layout()
+    fig.savefig(path, bbox_inches="tight")
+    plt.close(fig)
+    return [samples[i][0] for i in worst]
