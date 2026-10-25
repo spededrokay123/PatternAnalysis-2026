@@ -138,3 +138,64 @@ def measure_resources(model, device, n_runs=100):
         peak_vram_gb = torch.cuda.max_memory_allocated() / 1024**3
 
     return {"params": n_params, "latency_ms": latency_ms, "peak_vram_gb": peak_vram_gb}
+
+
+def fit_temperature(logits, labels):
+    """
+    Temperature scaling finds a number T that minimises the cross-entropy
+    of softmax(logits / T) on the validation set.
+    """
+    best_t, best_loss = 1.0, float("inf")
+    for t in torch.arange(0.5, 5.01, 0.01):
+        loss = torch.nn.functional.cross_entropy(logits / t, labels).item()
+        if loss < best_loss:
+            best_t, best_loss = t.item(), loss
+    return best_t
+
+
+def expected_calibration_error(confidences, correct, n_bins=10):
+    """
+    Computes the average gap between confidence and accuracy which is weighted by how many
+    predictions fall in each confidence interval
+    """
+
+    edges = np.linspace(0.5, 1.0, n_bins + 1)
+    ece = 0.0
+    for low, high in zip(edges[:-1], edges[1:]):
+        in_bin = (confidences > low) & (confidences <= high)
+        if in_bin.sum() > 0:
+            gap = abs(correct[in_bin].mean() - confidences[in_bin].mean())
+            ece += in_bin.mean() * gap
+    return ece
+
+
+def plot_reliability(conf_before, conf_after, correct, path, title):
+    """Produces reliability diagrams before and after temperature scaling."""
+    edges = np.linspace(0.5, 1.0, 11)
+    centres = (edges[:-1] + edges[1:]) / 2
+    fig, axes = plt.subplots(1, 2, figsize=(10, 4))
+
+    panels = [
+        (axes[0], conf_before, "Before temperature scaling"),
+        (axes[1], conf_after, "After temperature scaling"),
+    ]
+    for ax, conf, name in panels:
+        accs = []
+        for low, high in zip(edges[:-1], edges[1:]):
+            in_bin = (conf > low) & (conf <= high)
+            accs.append(correct[in_bin].mean() if in_bin.any() else 0.0)
+        ece = expected_calibration_error(conf, correct)
+
+        ax.bar(centres, accs, width=0.05, edgecolor="black", label="Accuracy")
+        ax.plot([0.5, 1], [0.5, 1], "k--", label="Perfect calibration")
+        ax.set_xlim(0.5, 1)
+        ax.set_ylim(0, 1)
+        ax.set_xlabel("Confidence")
+        ax.set_ylabel("Accuracy")
+        ax.set_title(f"{name} (ECE {ece:.3f})")
+        ax.legend(loc="upper left")
+
+    fig.suptitle(title)
+    fig.tight_layout()
+    fig.savefig(path)
+    plt.close(fig)
