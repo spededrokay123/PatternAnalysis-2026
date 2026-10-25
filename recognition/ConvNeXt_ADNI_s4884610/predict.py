@@ -275,3 +275,94 @@ def plot_failures(samples, probs, labels, path, title, n=5):
     fig.savefig(path, bbox_inches="tight")
     plt.close(fig)
     return [samples[i][0] for i in worst]
+
+
+def predict_image(model, image_path, device, temperature, threshold):
+    """Predict one slice and decide whether to accept or refer it."""
+    image = Image.open(image_path).convert("L")
+    x = get_transforms(train=False)(image).unsqueeze(0).to(device)
+    with torch.no_grad():
+        probs = torch.softmax(model(x) / temperature, dim=1)[0].cpu()
+
+    label = CLASS_NAMES[probs.argmax().item()]
+    confidence = probs.max().item()
+    decision = "ACCEPT" if confidence >= threshold else "REFER to clinician"
+    print(f"{image_path}: {label} (confidence {confidence:.3f}) -> {decision}")
+
+
+if __name__ == "__main__":
+    args = parse_args()
+    device = get_device()
+    checkpoint = args.checkpoint or os.path.join(args.out_dir, f"{args.model}_best.pt")
+    model = load_model(args.model, checkpoint, device)
+    eval_path = os.path.join(args.out_dir, f"{args.model}_eval.json")
+
+    if args.image is not None:
+        temperature = 1.0
+        if os.path.exists(eval_path):
+            with open(eval_path) as f:
+                temperature = json.load(f)["temperature"]
+        predict_image(model, args.image, device, temperature, args.threshold)
+        raise SystemExit
+
+    os.makedirs(args.fig_dir, exist_ok=True)
+    _, val_loader, test_loader = get_dataloaders(
+        args.data_root, batch_size=args.batch_size, num_workers=args.num_workers
+    )
+
+    # Logits for validation for fitting T and testing
+    val_logits, val_labels = collect_logits(model, val_loader, device)
+    test_logits, test_labels = collect_logits(model, test_loader, device)
+    temperature = fit_temperature(val_logits, val_labels)
+
+    labels = test_labels.numpy()
+    probs_before = torch.softmax(test_logits, dim=1).numpy()
+    probs_after = torch.softmax(test_logits / temperature, dim=1).numpy()
+    conf_before = probs_before.max(axis=1)
+    conf_after = probs_after.max(axis=1)
+    correct = (probs_before.argmax(axis=1) == labels).astype(float)
+
+    metrics = compute_metrics(probs_before[:, 1], labels)
+    resources = measure_resources(model, device)
+    reject = reject_option(conf_after, correct, args.threshold)
+
+    results = {
+        "model": args.model,
+        "temperature": temperature,
+        "metrics": metrics,
+        "resources": resources,
+    }
+
+    # Figures for the README
+    name = args.model
+    plot_confusion_and_roc(
+        probs_before[:, 1],
+        labels,
+        os.path.join(args.fig_dir, f"{name}_confusion_roc.png"),
+        f"{name} test set",
+    )
+    plot_reliability(
+        conf_before,
+        conf_after,
+        correct,
+        os.path.join(args.fig_dir, f"{name}_reliability.png"),
+        f"{name} calibration",
+    )
+    plot_referral_tradeoff(
+        conf_after,
+        correct,
+        args.threshold,
+        os.path.join(args.fig_dir, f"{name}_referral.png"),
+        f"{name} reject option",
+    )
+    results["failure_cases"] = plot_failures(
+        test_loader.dataset.samples,
+        probs_before[:, 1],
+        labels,
+        os.path.join(args.fig_dir, f"{name}_failures.png"),
+        f"{name}: most confident mistakes",
+    )
+
+    with open(eval_path, "w") as f:
+        json.dump(results, f, indent=2)
+    print(json.dumps(results, indent=2))
