@@ -7,10 +7,15 @@ Data loading and preprocessing for ADNI AD vs NC classification
       <data_root>/test/AD/*.jpeg
       <data_root>/test/NC/*.jpeg
 
-Filenames are <patientID>_<sliceNumber>.jpeg, with 20 slices per patient
+Filenames are <scanID>_<sliceNumber>.jpeg, with 20 slices per scan.
+
+Some subjects have several scans (different visits), so splitting is done by
+subject using <data_root>/../meta_data_with_label.json when it is available.
 """
 
 import os
+import re
+import json
 from sklearn.model_selection import train_test_split
 from PIL import Image
 from torch.utils.data import Dataset, DataLoader
@@ -21,20 +26,47 @@ IMG_EXTS = (".jpeg", ".jpg", ".png")
 
 
 def get_patient_id(filename):
-    """Return the patient ID from a filename of the above format"""
+    """Return the scan ID from a filename of the above format"""
     return os.path.basename(filename).split("_")[0]
 
 
-def gather_samples(data_root, split):
-    """List every (image_path, label, patient_id) in data_root/split/{AD,NC}."""
+def load_subject_map(data_root):
+    """
+    Map each scan ID to its ADNI subject ID (e.g: "068_S_0473") using the
+    metadata JSON in the AD_NC folder. Returns {} if the file is missing.
+    """
+    meta_path = os.path.join(
+        os.path.dirname(os.path.normpath(data_root)), "meta_data_with_label.json"
+    )
+    if not os.path.exists(meta_path):
+        print(f"No metadata at {meta_path}, splitting by scan ID instead")
+        return {}
+
+    with open(meta_path) as f:
+        meta = json.load(f)
+
+    subject_map = {}
+    for scan_id, entry in meta.items():
+        match = re.search(r"ADNI_(\d{3}_S_\d{4})", entry["raw"])
+        if match:
+            subject_map[scan_id] = match.group(1)
+    return subject_map
+
+
+def gather_samples(data_root, split, subject_map=None):
+    """
+    List every (image_path, label, subject_id) in data_root/split/{AD,NC}.
+    Falls back to the scan ID if the subject is unknown.
+    """
+    subject_map = subject_map or {}
     samples = []
     for class_name, label in CLASSES.items():
         class_dir = os.path.join(data_root, split, class_name)
         for fname in sorted(os.listdir(class_dir)):
             if fname.lower().endswith(IMG_EXTS):
-                samples.append(
-                    (os.path.join(class_dir, fname), label, get_patient_id(fname))
-                )
+                scan_id = get_patient_id(fname)
+                subject_id = subject_map.get(scan_id, scan_id)
+                samples.append((os.path.join(class_dir, fname), label, subject_id))
     return samples
 
 
@@ -105,18 +137,23 @@ def get_dataloaders(
     data_root, batch_size=32, val_fraction=0.15, num_workers=4, seed=42
 ):
     """Build train/val/test DataLoaders based on patient split."""
+    subject_map = load_subject_map(data_root)
     train_samples, val_samples = split_by_patient(
-        gather_samples(data_root, "train"), val_fraction, seed
+        gather_samples(data_root, "train", subject_map), val_fraction, seed
     )
-    test_samples = gather_samples(data_root, "test")
+    test_samples = gather_samples(data_root, "test", subject_map)
 
-    # check for overlapping patients in the test/train/validate splits
+    # train and val must never share a patient
     train_pids = {pid for _, _, pid in train_samples}
     val_pids = {pid for _, _, pid in val_samples}
     test_pids = {pid for _, _, pid in test_samples}
-    assert not (
-        train_pids & val_pids or train_pids & test_pids or val_pids & test_pids
-    ), "Patient leakage between splits"
+    assert not (train_pids & val_pids), "Patient leakage between train and val"
+
+    # the official test split shares some subjects with train:
+    print(
+        f"Subjects: train {len(train_pids)}, val {len(val_pids)}, test {len(test_pids)}"
+        f" | test subjects also in train/val: {len(test_pids & (train_pids | val_pids))}"
+    )
 
     train_ds = ADNIDataset(train_samples, get_transforms(train=True))
     val_ds = ADNIDataset(val_samples, get_transforms(train=False))
