@@ -117,24 +117,43 @@ class PerImageStandardise:
         return (x - x.mean()) / (x.std() + 1e-8)
 
 
-def get_transforms(train):
+def get_transforms(train, strong_aug=False):
     """Transforms the training images with flips, rotations, scaling, etc, while
-    both the training and test gets turned into tensors and standardised
+    both the training and test gets turned into tensors and standardised.
+    strong_aug makes the training changes bigger so the model can't rely on
+    exact head shape, position or brightness to recognise individual subjects.
     """
     steps = []
-    if train:
+    if train and not strong_aug:
         steps += [
             transforms.RandomHorizontalFlip(),
             transforms.RandomAffine(
                 degrees=10, translate=(0.05, 0.05), scale=(0.95, 1.05)
             ),
         ]
-    steps += [transforms.ToTensor(), PerImageStandardise()]
+    if train and strong_aug:
+        steps += [
+            transforms.RandomHorizontalFlip(),
+            transforms.RandomAffine(
+                degrees=15, translate=(0.1, 0.1), scale=(0.9, 1.1)
+            ),
+            transforms.ColorJitter(brightness=0.2, contrast=0.2),
+        ]
+    steps += [transforms.ToTensor()]
+    if train and strong_aug:
+        # blank out a small random patch (works on tensors, so after ToTensor)
+        steps += [transforms.RandomErasing(p=0.25, scale=(0.02, 0.1))]
+    steps += [PerImageStandardise()]
     return transforms.Compose(steps)
 
 
 def get_dataloaders(
-    data_root, batch_size=32, val_fraction=0.15, num_workers=4, seed=42
+    data_root,
+    batch_size=32,
+    val_fraction=0.15,
+    num_workers=4,
+    seed=42,
+    strong_aug=False,
 ):
     """Build train/val/test DataLoaders based on patient split."""
     subject_map = load_subject_map(data_root)
@@ -155,7 +174,9 @@ def get_dataloaders(
         f" | test subjects also in train/val: {len(test_pids & (train_pids | val_pids))}"
     )
 
-    train_ds = ADNIDataset(train_samples, get_transforms(train=True))
+    train_ds = ADNIDataset(
+        train_samples, get_transforms(train=True, strong_aug=strong_aug)
+    )
     val_ds = ADNIDataset(val_samples, get_transforms(train=False))
     test_ds = ADNIDataset(test_samples, get_transforms(train=False))
 

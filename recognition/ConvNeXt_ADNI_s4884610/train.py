@@ -25,12 +25,12 @@ def get_device():
     return torch.device("cpu")
 
 
-def build_model(name):
+def build_model(name, drop_path=0.0):
     """Return an initialised model from its name."""
     if name == "baseline":
         return BaselineCNN()
     if name == "convnext":
-        return ConvNeXt()
+        return ConvNeXt(drop_path=drop_path)
     raise ValueError(f"Unknown model: {name}")
 
 
@@ -43,6 +43,11 @@ def parse_args():
     parser.add_argument("--epochs", type=int, default=20)
     parser.add_argument("--batch_size", type=int, default=32)
     parser.add_argument("--lr", type=float, default=1e-3)
+    parser.add_argument("--weight_decay", type=float, default=0.01)
+    parser.add_argument("--schedule", default="constant", choices=["constant", "cosine"])
+    parser.add_argument("--label_smoothing", type=float, default=0.0)
+    parser.add_argument("--drop_path", type=float, default=0.0)
+    parser.add_argument("--strong_aug", action="store_true")
     parser.add_argument("--num_workers", type=int, default=4)
     parser.add_argument("--out_dir", default="outputs")
     return parser.parse_args()
@@ -131,15 +136,27 @@ if __name__ == "__main__":
     print(f"Using device: {device}")
 
     train_loader, val_loader, test_loader = get_dataloaders(
-        args.data_root, batch_size=args.batch_size, num_workers=args.num_workers
+        args.data_root,
+        batch_size=args.batch_size,
+        num_workers=args.num_workers,
+        strong_aug=args.strong_aug,
     )
 
-    model = build_model(args.model).to(device)
+    model = build_model(args.model, drop_path=args.drop_path).to(device)
     n_params = sum(p.numel() for p in model.parameters())
     print(f"Model: {args.model} ({n_params:,} parameters)")
 
-    criterion = nn.CrossEntropyLoss()
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr)
+    criterion = nn.CrossEntropyLoss(label_smoothing=args.label_smoothing)
+    optimizer = torch.optim.AdamW(
+        model.parameters(), lr=args.lr, weight_decay=args.weight_decay
+    )
+
+    # Cosine: smoothly lower the learning rate from lr to ~0 over all epochs.
+    scheduler = None
+    if args.schedule == "cosine":
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer, T_max=args.epochs
+        )
 
     os.makedirs(args.out_dir, exist_ok=True)
     ckpt_path = os.path.join(args.out_dir, f"{args.model}_best.pt")
@@ -157,6 +174,10 @@ if __name__ == "__main__":
         )
         val_loss, val_acc, _, _ = evaluate(model, val_loader, criterion, device)
 
+        current_lr = optimizer.param_groups[0]["lr"]
+        if scheduler is not None:
+            scheduler.step()
+
         history["train_loss"].append(train_loss)
         history["train_acc"].append(train_acc)
         history["val_loss"].append(val_loss)
@@ -170,7 +191,7 @@ if __name__ == "__main__":
             f"Epoch {epoch}/{args.epochs} | "
             f"train loss {train_loss:.4f} acc {train_acc:.3f} | "
             f"val loss {val_loss:.4f} acc {val_acc:.3f} | "
-            f"{time.time() - start:.0f}s"
+            f"lr {current_lr:.2e} | {time.time() - start:.0f}s"
         )
 
     train_time = time.time() - train_start
@@ -202,6 +223,11 @@ if __name__ == "__main__":
         "params": n_params,
         "epochs": args.epochs,
         "lr": args.lr,
+        "weight_decay": args.weight_decay,
+        "schedule": args.schedule,
+        "label_smoothing": args.label_smoothing,
+        "drop_path": args.drop_path,
+        "strong_aug": args.strong_aug,
         "batch_size": args.batch_size,
         "best_val_acc": best_val_acc,
         "test_loss": test_loss,
