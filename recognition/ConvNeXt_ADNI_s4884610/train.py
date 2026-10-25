@@ -6,6 +6,7 @@ Usage:
 """
 
 import argparse
+import json
 import time
 import os
 import torch
@@ -145,6 +146,10 @@ if __name__ == "__main__":
     history = {"train_loss": [], "train_acc": [], "val_loss": [], "val_acc": []}
     best_val_acc = 0.0
 
+    if device.type == "cuda":
+        torch.cuda.reset_peak_memory_stats()
+    train_start = time.time()
+
     for epoch in range(1, args.epochs + 1):
         start = time.time()
         train_loss, train_acc = train_one_epoch(
@@ -168,6 +173,8 @@ if __name__ == "__main__":
             f"{time.time() - start:.0f}s"
         )
 
+    train_time = time.time() - train_start
+
     # Plot the loss and accuracy itself.
     plot_history(
         history,
@@ -175,9 +182,33 @@ if __name__ == "__main__":
         f"{args.model} training curves",
     )
 
-    # Final Validation of baseline on Rangpur, only gets run once.
-    """
+    # Final test evaluation using the best validation checkpoint.
     model.load_state_dict(torch.load(ckpt_path, map_location=device))
     test_loss, test_acc, _, _ = evaluate(model, test_loader, criterion, device)
-    print(f"Best val accuracy {best_val_acc:.3f} | Test loss {test_loss:.4f} | Test accuracy {test_acc:.3f}")
-    """
+
+    peak_vram_gb = 0.0
+    if device.type == "cuda":
+        peak_vram_gb = torch.cuda.max_memory_allocated() / 1024**3
+
+    print(
+        f"Best val accuracy {best_val_acc:.3f} | "
+        f"Test loss {test_loss:.4f} | Test accuracy {test_acc:.3f}"
+    )
+    print(f"Training time {train_time / 60:.1f} min | Peak VRAM {peak_vram_gb:.2f} GB")
+
+    # Save the numbers needed for the README results and resources tables.
+    results = {
+        "model": args.model,
+        "params": n_params,
+        "epochs": args.epochs,
+        "lr": args.lr,
+        "batch_size": args.batch_size,
+        "best_val_acc": best_val_acc,
+        "test_loss": test_loss,
+        "test_acc": test_acc,
+        "train_time_min": train_time / 60,
+        "peak_vram_gb": peak_vram_gb,
+        "history": history,
+    }
+    with open(os.path.join(args.out_dir, f"{args.model}_results.json"), "w") as f:
+        json.dump(results, f, indent=2)
