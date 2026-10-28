@@ -9,22 +9,34 @@ Extra analysis of trained ADNI models (not part of the model)
     - acquisition year and MRI sequence per class, read from the raw file
       name in meta_data_with_label.json
 
+Additionally, draws the example slices,seen vs unseen accuracy and accuracy by acquisition era, and copies the
+training curves into the figure folder.
+
 Usage:
     python3 analysis.py --data_root <path>/AD_NC \
-        --run baseline:outputs_pc_baseline_bn \
-        --run convnext:outputs_pc_reg
+        --run baseline:outputs_pc_baseline_bn:"Baseline CNN" \
+        --run convnext:outputs_pc_reg:"ConvNeXt run 3" \
+        --curve outputs_pc_reg/convnext_curves.png:convnext_run3_curves.png
+
+Add --figures_only to redraw the figures from an existing --out JSON
+without running the models again.
 """
-
-
 
 import argparse
 import json
 import os
 import re
+import shutil
 from collections import Counter
 import torch
+import matplotlib.pyplot as plt
+from PIL import Image
 from dataset import get_dataloaders, get_patient_id, load_subject_map
 from train import get_device, build_model
+
+# colours for the figures
+BLUE, ORANGE, GREEN = "#2a78d6", "#eb6834", "#1baf7a"
+GRID_COLOUR, TEXT_COLOUR = "#e4e3df", "#52514e"
 
 
 def parse_args():
@@ -33,9 +45,12 @@ def parse_args():
         "--data_root", default=os.path.expanduser("~/comp3710_data/AD_NC")
     )
     parser.add_argument("--run", action="append", default=[])
+    parser.add_argument("--curve", action="append", default=[])
     parser.add_argument("--batch_size", type=int, default=64)
     parser.add_argument("--num_workers", type=int, default=4)
     parser.add_argument("--out", default=os.path.join("outputs", "analysis.json"))
+    parser.add_argument("--fig_dir", default="images")
+    parser.add_argument("--figures_only", action="store_true")
     return parser.parse_args()
 
 
@@ -250,11 +265,144 @@ def accuracy_by_era(test_probs, test_samples, scan_info):
     }
 
 
+def style_axes(ax):
+    """Axis styling"""
+    ax.grid(axis="y", color=GRID_COLOUR)
+    ax.set_axisbelow(True)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+
+
+def label_bars(ax, bars, fmt):
+    """Write each bar's value just above it"""
+    for bar in bars:
+        ax.annotate(
+            fmt.format(bar.get_height()),
+            (bar.get_x() + bar.get_width() / 2, bar.get_height()),
+            ha="center",
+            va="bottom",
+            fontsize=9,
+            xytext=(0, 2),
+            textcoords="offset points",
+        )
+
+
+def plot_example_slices(data_root, path):
+    """Two AD and two NC training slices from different scans."""
+    ad_files = sorted(os.listdir(os.path.join(data_root, "train", "AD")))
+    nc_files = sorted(os.listdir(os.path.join(data_root, "train", "NC")))
+    examples = [
+        ("AD", ad_files[10]),
+        ("AD", ad_files[4010]),
+        ("NC", nc_files[10]),
+        ("NC", nc_files[6010]),
+    ]
+
+    fig, axes = plt.subplots(1, 4, figsize=(12, 3.4))
+    for ax, (cls, fname) in zip(axes, examples):
+        image = Image.open(os.path.join(data_root, "train", cls, fname)).convert("L")
+        ax.imshow(image, cmap="gray")
+        ax.set_title(f"{cls}  ({fname})", fontsize=9)
+        ax.axis("off")
+    fig.suptitle("Example input slices (256 x 240 greyscale, sagittal)")
+    fig.tight_layout()
+    fig.savefig(path, dpi=120)
+    plt.close(fig)
+
+
+def plot_seen_unseen(results, path):
+    """Test scan accuracy on seen vs unseen subjects for each run"""
+    names = [n for n in results["run_labels"]]
+    labels = [results["run_labels"][n] for n in names]
+    seen = [results["runs"][n]["test_scan_acc_seen_subjects"] for n in names]
+    unseen = [results["runs"][n]["test_scan_acc_unseen_subjects"] for n in names]
+    counts = results["test_scan_counts"]
+    n_seen = sum(counts["seen"].values())
+    n_unseen = sum(counts["unseen"].values())
+    width = 0.38
+    positions = list(range(len(names)))
+
+    fig, ax = plt.subplots(figsize=(10, 4))
+    seen_bars = ax.bar([p - width / 2 - 0.01 for p in positions], seen, width, color=BLUE,
+                       label=f"Seen subjects ({n_seen} scans)")
+    unseen_bars = ax.bar([p + width / 2 + 0.01 for p in positions], unseen, width, color=ORANGE,
+                         label=f"Unseen subjects ({n_unseen} scans)")
+    label_bars(ax, seen_bars, "{:.2f}")
+    label_bars(ax, unseen_bars, "{:.2f}")
+    ax.axhline(0.5, color=TEXT_COLOUR, linestyle="--", linewidth=1)
+    ax.set_xlim(-0.65, len(names) + 0.05)
+    ax.text(len(names), 0.51, "chance", color=TEXT_COLOUR, fontsize=9, ha="right", va="bottom")
+    ax.set_xticks(positions)
+    ax.set_xticklabels(labels)
+    ax.set_ylim(0, 1.18)
+    ax.set_yticks([0, 0.2, 0.4, 0.6, 0.8, 1.0])
+    ax.set_ylabel("Test scan-level accuracy")
+    ax.set_title("Test accuracy on subjects seen in training vs unseen subjects")
+    ax.legend(frameon=False, loc="upper center", ncol=2)
+    style_axes(ax)
+    fig.tight_layout()
+    fig.savefig(path, dpi=120)
+    plt.close(fig)
+
+
+def plot_accuracy_by_era(results, path):
+    """Test scan accuracy for old-protocol AD, new-protocol AD and NC for each run."""
+    names = [n for n in results["run_labels"]]
+    labels = [results["run_labels"][n] for n in names]
+    groups = [
+        ("AD <=2015", "AD, acquired <= 2015", BLUE),
+        ("AD >=2016", "AD, acquired >= 2016", ORANGE),
+        ("NC >=2016", "NC, acquired >= 2016", GREEN),
+    ]
+    width = 0.27
+    positions = list(range(len(names)))
+
+    fig, ax = plt.subplots(figsize=(10, 4))
+    for i, (key, legend, colour) in enumerate(groups):
+        values = [results["runs"][n]["test_acc_by_era"][key]["scan_acc"] for n in names]
+        n_scans = results["runs"][names[0]]["test_acc_by_era"][key]["scans"]
+        offset = (i - 1) * (width + 0.02)
+        bars = ax.bar([p + offset for p in positions], values, width, color=colour,
+                      label=f"{legend} ({n_scans} scans)")
+        label_bars(ax, bars, "{:.2f}")
+    ax.set_xticks(positions)
+    ax.set_xticklabels(labels)
+    ax.set_ylim(0, 1.18)
+    ax.set_yticks([0, 0.2, 0.4, 0.6, 0.8, 1.0])
+    ax.set_ylabel("Test scan-level accuracy")
+    ax.set_title("Test accuracy by class and acquisition era")
+    ax.legend(frameon=False, loc="upper center", ncol=3, fontsize=9)
+    style_axes(ax)
+    fig.tight_layout()
+    fig.savefig(path, dpi=120)
+    plt.close(fig)
+
+
+def make_figures(results, args):
+    """Draw every analysis figure and copy the training curves into fig_dir."""
+    os.makedirs(args.fig_dir, exist_ok=True)
+    plot_example_slices(args.data_root, os.path.join(args.fig_dir, "example_slices.png"))
+    if results["run_labels"]:
+        plot_seen_unseen(results, os.path.join(args.fig_dir, "seen_vs_unseen.png"))
+        plot_accuracy_by_era(results, os.path.join(args.fig_dir, "accuracy_by_era.png"))
+
+    for curve in args.curve:
+        source, name = curve.rsplit(":", 1)  # rsplit so a Windows drive letter is fine
+        shutil.copy(source, os.path.join(args.fig_dir, name))
+    print(f"Figures saved to {args.fig_dir}")
+
+
 if __name__ == "__main__":
     args = parse_args()
 
+    # redraw the figures from a saved JSON without loading any model
+    if args.figures_only:
+        with open(args.out) as f:
+            make_figures(json.load(f), args)
+        raise SystemExit
+
     if not args.run:
-        raise SystemExit("Give at least one --run <model>:<out_dir>")
+        raise SystemExit("Give at least one --run <model>:<out_dir>[:<label>]")
     device = get_device()
 
     train_loader, val_loader, test_loader = get_dataloaders(
@@ -271,7 +419,7 @@ if __name__ == "__main__":
     # maps a scan ID to (acquisition year, MRI sequence)
     scan_info = load_scan_info(args.data_root)
 
-
+    
     # count how many scans are mapped to a subject ID
     all_samples = train_samples + val_samples + test_samples
     all_scans = {get_patient_id(path) for path, _, _ in all_samples}
@@ -298,13 +446,15 @@ if __name__ == "__main__":
         ),
         "sites": site_analysis(train_samples, test_samples, seen_subjects),
         "runs": {},
+        "run_labels": {},  # run name to label used on the figures
     }
 
     # actual model results
     flip_val, flip_test = [], []  # flipped predictions of every run, for the ensemble
     for run in args.run:
-        # example "convnext:outputs_pc_reg" to model and folder
-        model_name, out_dir = run.split(":", 1)
+        # example "convnext:outputs_pc_reg:ConvNeXt run 3" to model, folder, optional label
+        parts = run.split(":", 2)
+        model_name, out_dir = parts[0], parts[1]
         model = build_model(model_name)
         checkpoint = os.path.join(out_dir, f"{model_name}_best.pt")
         model.load_state_dict(torch.load(checkpoint, map_location=device))
@@ -320,6 +470,7 @@ if __name__ == "__main__":
         flip_test.append(test_flip)
 
         name = f"{model_name}:{out_dir}"
+        results["run_labels"][name] = parts[2] if len(parts) == 3 else name
 
         # accuracy summaries
         results["runs"][name] = summarise(
@@ -350,9 +501,11 @@ if __name__ == "__main__":
             ensemble_val, ensemble_test, val_samples, test_samples, seen_subjects
         )
 
+    # save everything so the figures can be redrawn later with --figures_only.
     os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
     with open(args.out, "w") as f:
         json.dump(results, f, indent=2)
+    make_figures(results, args)
 
     # short printed summary (full numbers in the JSON).
     print(json.dumps(results["test_scan_counts"]), json.dumps(results["sites"]))
