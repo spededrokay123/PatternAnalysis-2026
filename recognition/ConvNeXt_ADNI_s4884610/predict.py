@@ -326,11 +326,35 @@ if __name__ == "__main__":
     resources = measure_resources(model, device)
     reject = reject_option(conf_after, correct, args.threshold)
 
+    # ECE on val and test, confident mistakes
+    # Added here which I forgot to add earlier.
+    val_probs = torch.softmax(val_logits, dim=1).numpy()
+    val_correct = (val_probs.argmax(axis=1) == val_labels.numpy()).astype(float)
+    confident_wrong = (correct == 0) & (conf_after >= args.threshold)
+    calibration = {
+        "val_ece": expected_calibration_error(val_probs.max(axis=1), val_correct),
+        "test_ece_before": expected_calibration_error(conf_before, correct),
+        "test_ece_after": expected_calibration_error(conf_after, correct),
+        "wrong_slices": int((correct == 0).sum()),
+        "confident_wrong_slices": int(confident_wrong.sum()),
+        "confident_wrong_AD_predicted_NC": int((confident_wrong & (labels == 1)).sum()),
+    }
+
+    # Reject options at multiple thresholds.
+    reject_table = []
+    for t in (0.8, 0.9, 0.95):
+        reject_table.append(reject_option(conf_after, correct, t))
+    threshold_30 = float(np.quantile(conf_after, 0.30))
+    reject_table.append(reject_option(conf_after, correct, threshold_30))
+
     results = {
         "model": args.model,
         "temperature": temperature,
         "metrics": metrics,
         "resources": resources,
+        "calibration": calibration,
+        "reject_option": reject,
+        "reject_table": reject_table,
     }
 
     # Figures for the README
